@@ -79,6 +79,19 @@ export interface PracticeResult {
   is_finished: boolean
 }
 
+export interface ExamSession {
+  session_id: string
+  name: string
+  total_questions: number
+  duration_minutes: number
+  start_time: string
+  end_time: string
+  remaining_seconds: number
+  is_submitted: boolean
+  answers: Record<string, any>
+  questions: Question[]
+}
+
 export interface ExamResult {
   id: string
   name: string

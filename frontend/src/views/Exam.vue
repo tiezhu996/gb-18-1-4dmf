@@ -49,7 +49,7 @@
         {{ currentQuestion.content }}
       </div>
 
-      <div class="options-container">
+      <div class="options-container" :class="{ locked: expired }">
         <div
           v-if="currentQuestion.type === 'fill_blank'"
           class="fill-blank-container"
@@ -59,6 +59,7 @@
             placeholder="请输入答案"
             :border="false"
             class="fill-input"
+            :disabled="expired"
           />
         </div>
 
@@ -91,6 +92,7 @@
         type="primary"
         size="large"
         :loading="submitting"
+        :disabled="expired"
         @click="handleNextOrSubmit"
       >
         {{ currentIndex === questions.length - 1 ? '交卷' : '下一题' }}
@@ -100,10 +102,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { showConfirmDialog, showLoadingToast, closeToast, showToast } from 'vant'
-import { submitExam } from '@/api/exam'
+import { getExam, saveExamAnswers, submitExam } from '@/api/exam'
 import type { Question } from '@/types'
 
 const route = useRoute()
@@ -117,9 +119,14 @@ const currentIndex = ref(0)
 const answers = reactive<Record<string, any>>({})
 const selectedAnswers = reactive<Record<string, string[]>>({})
 const durationMinutes = ref(60)
-const remainingTime = ref(3600)
+const remainingTime = ref(0)
 const submitting = ref(false)
+// 到达截止时间后立即锁定页面，停止修改答案
+const expired = ref(false)
 let timer: number | null = null
+let saveTimer: number | null = null
+let deadlineTs = 0
+let settling = false
 
 const currentQuestion = computed(() => questions.value[currentIndex.value] || null)
 
@@ -175,6 +182,7 @@ const getNavItemClass = (index: number) => {
 }
 
 const selectOption = (key: string) => {
+  if (expired.value) return
   const qid = currentQuestion.value?.id
   if (!qid) return
 
@@ -205,6 +213,7 @@ const goPrev = () => {
 }
 
 const handleNextOrSubmit = () => {
+  if (expired.value) return
   if (currentIndex.value === questions.value.length - 1) {
     confirmSubmit()
   } else {
@@ -225,6 +234,29 @@ const getSubmitAnswers = () => {
   })
   return result
 }
+
+// 答题进度自动保存到服务端，刷新或到点后按已保存答案恢复/结算
+const flushSave = async () => {
+  if (expired.value || settling || questions.value.length === 0) return
+  try {
+    const res = await saveExamAnswers(sessionId.value, getSubmitAnswers())
+    if (!res.saved && res.is_submitted) {
+      goToResult()
+    }
+  } catch (error) {
+    // 保存失败不打断答题，下次变更或到点时重试
+    console.error(error)
+  }
+}
+
+const scheduleSave = () => {
+  if (expired.value || settling) return
+  if (saveTimer) clearTimeout(saveTimer)
+  saveTimer = window.setTimeout(flushSave, 800)
+}
+
+watch(answers, scheduleSave, { deep: true })
+watch(selectedAnswers, scheduleSave, { deep: true })
 
 const confirmSubmit = () => {
   const totalAnswered = questions.value.filter((q) => {
@@ -250,26 +282,51 @@ const confirmSubmit = () => {
 }
 
 const doSubmit = async () => {
+  if (settling) return
+  settling = true
   submitting.value = true
   showLoadingToast({ message: '正在交卷...', duration: 0 })
   try {
-    const submitAnswers = getSubmitAnswers()
-    const result = await submitExam(sessionId.value, submitAnswers)
+    const result = await submitExam(sessionId.value, getSubmitAnswers())
     closeToast()
-    router.push(`/exam-result/${result.id}`)
+    router.replace(`/exam-result/${result.id}`)
   } catch (error) {
     console.error(error)
     closeToast()
     showToast('交卷失败，请重试')
+    settling = false
   } finally {
     submitting.value = false
   }
 }
 
+// 到点自动交卷：锁定页面并按已保存答案结算
+const handleTimeout = async () => {
+  if (settling) return
+  settling = true
+  expired.value = true
+  if (saveTimer) clearTimeout(saveTimer)
+  showLoadingToast({ message: '考试时间已到，正在交卷...', duration: 0 })
+  try {
+    const result = await submitExam(sessionId.value, getSubmitAnswers())
+    closeToast()
+    router.replace(`/exam-result/${result.id}`)
+  } catch (error) {
+    console.error(error)
+    closeToast()
+    // 即使交卷请求失败，服务端也会按已保存答案自动结算，直接查看结果
+    goToResult()
+  }
+}
+
+const goToResult = () => {
+  router.replace(`/exam-result/${sessionId.value}`)
+}
+
 const handleBack = () => {
   showConfirmDialog({
     title: '确认退出',
-    message: '退出后考试进度将丢失，确定要退出吗？'
+    message: '退出后考试仍将继续计时，到点未交卷将按已保存答案自动结算，确定退出吗？'
   })
     .then(() => {
       if (timer) clearInterval(timer)
@@ -278,52 +335,61 @@ const handleBack = () => {
     .catch(() => {})
 }
 
-const loadExamData = () => {
-  const stored = localStorage.getItem(`exam_${sessionId.value}`)
-  if (stored) {
-    try {
-      const data = JSON.parse(stored)
-      examName.value = data.name
-      questions.value = data.questions
-      durationMinutes.value = data.duration_minutes
-      remainingTime.value = data.remaining_time
-    } catch (e) {
-      console.error(e)
-      router.push('/')
+const restoreAnswers = (saved: Record<string, any>) => {
+  questions.value.forEach((q) => {
+    const value = saved[q.id]
+    if (value === undefined || value === null) return
+    if (q.type === 'multiple_choice') {
+      selectedAnswers[q.id] = Array.isArray(value) ? [...value] : [value]
+    } else if (value !== '') {
+      answers[q.id] = value
     }
-  } else {
+  })
+}
+
+const loadExamData = async () => {
+  try {
+    const data = await getExam(sessionId.value)
+    // 已交卷或已到截止时间：直接显示结果（服务端已自动结算）
+    if (data.is_submitted || data.remaining_seconds <= 0) {
+      goToResult()
+      return
+    }
+    examName.value = data.name
+    questions.value = data.questions
+    durationMinutes.value = data.duration_minutes
+    restoreAnswers(data.answers || {})
+    // 以服务端剩余时间为准恢复倒计时，刷新页面不丢失
+    deadlineTs = Date.now() + data.remaining_seconds * 1000
+    remainingTime.value = data.remaining_seconds
+    startTimer()
+  } catch (error) {
+    console.error(error)
     router.push('/')
   }
 }
 
 const startTimer = () => {
+  if (timer) clearInterval(timer)
   timer = window.setInterval(() => {
-    if (remainingTime.value > 0) {
-      remainingTime.value--
-      localStorage.setItem(
-        `exam_${sessionId.value}`,
-        JSON.stringify({
-          name: examName.value,
-          questions: questions.value,
-          duration_minutes: durationMinutes.value,
-          remaining_time: remainingTime.value
-        })
-      )
-    } else {
+    const remain = Math.max(0, Math.round((deadlineTs - Date.now()) / 1000))
+    remainingTime.value = remain
+    if (remain <= 0) {
       if (timer) clearInterval(timer)
-      showToast('考试时间已到')
-      doSubmit()
+      handleTimeout()
     }
-  }, 1000)
+  }, 500)
 }
 
 onMounted(() => {
   loadExamData()
-  startTimer()
 })
 
 onUnmounted(() => {
   if (timer) clearInterval(timer)
+  if (saveTimer) clearTimeout(saveTimer)
+  // 离开页面前尽量保存一次进度
+  flushSave()
 })
 </script>
 
@@ -474,6 +540,11 @@ onUnmounted(() => {
 
 .options-container {
   margin-bottom: 20px;
+}
+
+.options-container.locked {
+  pointer-events: none;
+  opacity: 0.7;
 }
 
 .option-item {

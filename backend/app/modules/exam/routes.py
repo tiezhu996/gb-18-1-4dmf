@@ -1,9 +1,28 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from app.modules.exam.models import ExamConfig, ExamSubmit
-from app.modules.exam.service import ExamService
+from app.modules.exam.models import ExamConfig, ExamSubmit, AnswersSave
+from app.modules.exam.service import ExamService, _exam_deadline, _parse_dt
 from app.modules.auth.dependencies import get_current_user
 
+from datetime import datetime
+
 router = APIRouter()
+
+
+def _session_payload(session: dict) -> dict:
+    """考试会话的公共信息（含服务端剩余时间，用于刷新后恢复倒计时）。"""
+    deadline = _exam_deadline(session)
+    remaining = max(int((deadline - datetime.utcnow()).total_seconds()), 0)
+    return {
+        "session_id": str(session["_id"]),
+        "name": session.get("name", "模拟考试"),
+        "total_questions": session.get("total_questions"),
+        "duration_minutes": session.get("duration_minutes"),
+        "start_time": _parse_dt(session.get("start_time")),
+        "end_time": deadline,
+        "remaining_seconds": remaining,
+        "is_submitted": bool(session.get("is_submitted")),
+        "answers": session.get("answers") or {}
+    }
 
 
 @router.post("/start")
@@ -23,11 +42,7 @@ async def start_exam(
         questions = await ExamService.get_questions(session["id"], str(user["_id"]))
 
         return {
-            "session_id": session["id"],
-            "name": session["name"],
-            "total_questions": session["total_questions"],
-            "duration_minutes": session["duration_minutes"],
-            "start_time": session["start_time"],
+            **_session_payload(session),
             "questions": questions
         }
     except ValueError as e:
@@ -39,18 +54,31 @@ async def get_exam(
     session_id: str,
     user: dict = Depends(get_current_user)
 ):
-    try:
-        questions = await ExamService.get_questions(session_id, str(user["_id"]))
-        session = await ExamService.get_exam(session_id, str(user["_id"]))
+    session = await ExamService.get_exam(session_id, str(user["_id"]))
+    if not session:
+        raise HTTPException(status_code=404, detail="考试不存在")
 
-        return {
-            "session_id": session_id,
-            "name": session.get("name", "模拟考试"),
-            "total_questions": session.get("total_questions"),
-            "duration_minutes": session.get("duration_minutes"),
-            "start_time": session.get("start_time"),
-            "questions": questions
-        }
+    payload = _session_payload(session)
+    if session.get("is_submitted"):
+        # 已交卷（含到点自动结算）：不再下发题目，前端直接展示结果
+        payload["questions"] = []
+    else:
+        payload["questions"] = await ExamService.get_questions(session_id, str(user["_id"]))
+    return payload
+
+
+@router.put("/{session_id}/answers")
+async def save_answers(
+    session_id: str,
+    data: AnswersSave,
+    user: dict = Depends(get_current_user)
+):
+    try:
+        return await ExamService.save_answers(
+            session_id=session_id,
+            user_id=str(user["_id"]),
+            answers=data.answers
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -76,22 +104,10 @@ async def get_result(
     session_id: str,
     user: dict = Depends(get_current_user)
 ):
-    session = await ExamService.get_exam(session_id, str(user["_id"]), include_answers=True)
-    if not session or not session.get("is_submitted"):
+    result = await ExamService.get_result(session_id, str(user["_id"]))
+    if not result:
         raise HTTPException(status_code=404, detail="考试结果不存在")
-
-    return {
-        "id": session_id,
-        "name": session.get("name", "模拟考试"),
-        "subject_id": session.get("subject_id"),
-        "score": session.get("score", 0),
-        "total_questions": session.get("total_questions", 0),
-        "correct_count": session.get("correct_count", 0),
-        "accuracy": session.get("score", 0),
-        "duration_used": session.get("duration_used", 0),
-        "submitted_at": session.get("end_time"),
-        "details": session.get("details", [])
-    }
+    return result
 
 
 @router.get("/history/list")

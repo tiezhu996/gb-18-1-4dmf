@@ -192,16 +192,6 @@ const startQuickExam = async () => {
           duration_minutes: 30
         })
 
-        localStorage.setItem(
-          `exam_${result.session_id}`,
-          JSON.stringify({
-            name: result.name,
-            questions: result.questions,
-            duration_minutes: result.duration_minutes,
-            remaining_time: result.duration_minutes * 60
-          })
-        )
-
         closeToast()
         router.push(`/exam/${result.session_id}`)
       } catch (error) {

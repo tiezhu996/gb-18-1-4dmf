@@ -60,7 +60,7 @@ class PracticeService:
 
         if redis:
             key = f"practice:{user_id}:{str(result.inserted_id)}"
-            await redis.setex(key, 3600 * 24, json.dumps(session_dict))
+            await redis.setex(key, 3600 * 24, json.dumps(session_dict, default=str))
 
         return session_dict
 
@@ -87,7 +87,7 @@ class PracticeService:
             session["_id"] = str(session["_id"])
             if redis:
                 key = f"practice:{user_id}:{session_id}"
-                await redis.setex(key, 3600 * 24, json.dumps(session))
+                await redis.setex(key, 3600 * 24, json.dumps(session, default=str))
 
         return session
 
@@ -148,7 +148,7 @@ class PracticeService:
         session.update(update_data)
         if redis:
             key = f"practice:{user_id}:{session_id}"
-            await redis.setex(key, 3600 * 24, json.dumps(session))
+            await redis.setex(key, 3600 * 24, json.dumps(session, default=str))
 
         progress = {
             "current": session["current_index"],
@@ -229,7 +229,7 @@ class PracticeService:
         session["current_index"] = new_index
         if redis:
             key = f"practice:{user_id}:{session_id}"
-            await redis.setex(key, 3600 * 24, json.dumps(session))
+            await redis.setex(key, 3600 * 24, json.dumps(session, default=str))
 
         if 0 <= new_index < len(question_ids):
             return await QuestionService.get_question_by_id(question_ids[new_index])
