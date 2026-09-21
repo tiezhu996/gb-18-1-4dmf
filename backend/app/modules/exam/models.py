@@ -31,6 +31,11 @@ class ExamSubmit(BaseModel):
     answers: Dict[str, Any]
 
 
+class ExamSave(BaseModel):
+    session_id: str
+    answers: Dict[str, Any]
+
+
 class ExamResult(BaseModel):
     id: str
     name: str

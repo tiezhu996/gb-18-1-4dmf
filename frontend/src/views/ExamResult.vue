@@ -66,7 +66,7 @@
 
             <div v-if="item.type !== 'fill_blank'" class="options-list">
               <div
-                v-for="opt in item.options"
+                v-for="opt in getDetailOptions(item)"
                 :key="opt.key"
                 class="option-item"
                 :class="getOptionResultClass(item, opt.key)"
@@ -176,6 +176,17 @@ const getOptionResultClass = (item: ExamQuestionDetail, key: string) => {
     classes.push('wrong')
   }
   return classes
+}
+
+// 判断题种子数据可能缺少 options，补默认选项（A=正确，B=错误）
+const getDetailOptions = (item: ExamQuestionDetail) => {
+  if (item.type === 'true_false' && (!item.options || item.options.length === 0)) {
+    return [
+      { key: 'A', content: '正确' },
+      { key: 'B', content: '错误' }
+    ]
+  }
+  return item.options || []
 }
 
 const goHome = () => {

@@ -4,6 +4,13 @@ import { showToast } from 'vant'
 import { useUserStore } from '@/stores/user'
 import router from '@/router'
 
+declare module 'axios' {
+  interface AxiosRequestConfig {
+    /** 静默请求：业务错误不弹全局 Toast（如自动保存） */
+    _silent?: boolean
+  }
+}
+
 interface DataClient {
   get<T = any>(url: string, config?: AxiosRequestConfig): Promise<T>
   post<T = any>(url: string, data?: any, config?: AxiosRequestConfig): Promise<T>
@@ -37,15 +44,16 @@ request.interceptors.response.use(
   (error) => {
     const status = error.response?.status
     const message = error.response?.data?.detail || error.message || '请求失败'
+    const silent = error.config?._silent
 
     if (status === 401) {
       const userStore = useUserStore()
       userStore.logout()
       router.push('/login')
-      showToast('登录已过期，请重新登录')
+      if (!silent) showToast('登录已过期，请重新登录')
     } else if (status === 403) {
-      showToast('没有权限')
-    } else {
+      if (!silent) showToast('没有权限')
+    } else if (!silent) {
       showToast(message)
     }
 

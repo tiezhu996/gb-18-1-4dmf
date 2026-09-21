@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+import asyncio
 
 from app.core.config import settings
 from app.core.database import init_db
@@ -10,15 +11,38 @@ from app.modules.questions.routes import router as questions_router
 from app.modules.knowledge.routes import router as knowledge_router
 from app.modules.practice.routes import router as practice_router
 from app.modules.exam.routes import router as exam_router
+from app.modules.exam.service import ExamService
 from app.modules.errors.routes import router as errors_router
 from app.modules.analysis.routes import router as analysis_router
+
+
+async def auto_settle_loop():
+    """周期性把到点未交卷的考试按已保存答案自动结算。"""
+    while True:
+        try:
+            await ExamService.auto_settle_due_exams()
+        except Exception as exc:
+            print(f"[exam] 自动结算任务异常: {exc}")
+        await asyncio.sleep(15)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
     await init_redis()
-    yield
+    try:
+        await ExamService.ensure_indexes()
+    except Exception as exc:
+        print(f"[exam] 创建索引失败（不影响运行）: {exc}")
+    task = asyncio.create_task(auto_settle_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(
